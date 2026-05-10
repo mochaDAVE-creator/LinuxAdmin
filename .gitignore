@@ -1,0 +1,194 @@
+# LinuxAdmin repository — public repo safety .gitignore
+# Prevents accidental commit of secrets, private keys, raw evidence, and sensitive artifacts.
+
+# ============================================================
+# SSH private keys (NEVER commit private keys)
+# ============================================================
+*.pem
+*.key
+id_rsa
+id_rsa.pem
+id_ed25519
+id_ecdsa
+id_dsa
+*_rsa
+*_ed25519
+*_ecdsa
+# Exclude .pub files from above pattern if needed — public keys are safe
+!*.pub
+
+# ============================================================
+# GPG / PGP
+# ============================================================
+*.gpg
+*.asc
+secring.gpg
+pubring.gpg
+trustdb.gpg
+
+# ============================================================
+# TLS / Certificate material
+# ============================================================
+*.crt
+*.pfx
+*.p12
+*.der
+*.csr
+# Exception: public certificates that are intentionally shared can be committed
+# with explicit filename patterns — add explicit !<file>.crt overrides as needed
+
+# ============================================================
+# Sensitive evidence and forensic artifacts
+# ============================================================
+# Raw packet captures — may contain passwords and sensitive session data
+*.pcap
+*.pcapng
+*.cap
+*.eth
+*.snoop
+
+# Raw disk images and memory dumps
+*.img
+*.dd
+*.raw
+*.iso
+*.vmem
+*.mem
+*.dmp
+
+# System journal exports (may contain PII, credentials in log messages)
+*.journal
+journal_*.txt
+journal_full_boot_export.txt
+
+# ============================================================
+# Credentials and secrets files
+# ============================================================
+.env
+.env.*
+*.env
+secrets.yaml
+secrets.yml
+secrets.json
+*.secret
+.secrets/
+secrets/
+credentials.txt
+credentials.json
+api-key*.txt
+*-password*.txt
+*_password*.txt
+*_key.txt
+*_token.txt
+
+# ============================================================
+# Evidence directories (contain full log exports and potential PII)
+# ============================================================
+# Individual project evidence output (raw triage data — keep locally)
+evidence/*/journal_full_boot_export.txt
+evidence/*/journal_today.txt
+evidence/*/journal_last_24h.txt
+# IR triage bundles (may contain sensitive process/network data)
+/tmp/ir-*
+/tmp/ir-triage-*/
+
+# ============================================================
+# OS and editor artifacts
+# ============================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+__MACOSX/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Vim
+*.swp
+*.swo
+*.swn
+.viminfo
+
+# Emacs
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+
+# VSCode
+.vscode/settings.json
+.vscode/*.log
+# Keep .vscode/extensions.json if present (useful for Obsidian-related extensions)
+
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.venv/
+venv/
+.Python
+
+# ============================================================
+# Node.js (if any tooling scripts use npm)
+# ============================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================================
+# Build artifacts and temporary files
+# ============================================================
+*.o
+*.a
+*.so
+*.out
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ============================================================
+# Obsidian vault internal files
+# ============================================================
+# Obsidian sync and workspace state — machine-specific, not for VCS
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/core-plugins-migration.json
+# Keep .obsidian/app.json, plugins/, themes/, etc. if they are intentionally tracked
+# Uncomment the line below to ignore all Obsidian internals:
+# .obsidian/
+
+# ============================================================
+# Snapper and Btrfs artifacts
+# ============================================================
+.snapshots/
+@snapshots/
+
+# ============================================================
+# Log files (general — project-specific logs are in evidence/)
+# ============================================================
+*.log
+!audit_summary.log  # Keep intentionally tracked log summaries
