@@ -2,348 +2,306 @@
 title: B2 - FHS Artifact Hunt
 aliases:
   - b2-fhs-artifact-hunt
+  - filesystem-triage-beginner
 tags:
   - beginner
   - fhs
   - forensics
   - triage
   - evidence
+  - net179
+  - net412
 date: 2026-05-10
 ---
 
 # B2 — FHS Artifact Hunt
 
+> [!warning] Operating Assumptions & Threat Model
+> **Context:** Arch Linux bare-metal host. All commands are read-only except the evidence directory creation. No files are modified or deleted.
+> **Risk level:** Low — purely forensic/observational. No services are touched.
+> **Threat model:** An analyst who does not know the Linux Filesystem Hierarchy Standard (FHS) cannot reliably locate artifacts during an investigation or triage session. This project builds systematic artifact-location muscle memory.
+> **Out of scope:** Live-memory acquisition, kernel module inspection, raw disk imaging. Those require advanced forensics tooling not covered here.
+> **Data sensitivity:** Some paths visited (e.g., `/etc/shadow`, `/root/`) require root. Never export shadow hashes or private key material to the evidence bundle — capture only metadata and redacted excerpts where required.
+
 ## 1) Mission
 
-- **Problem statement:** Operators who do not know where Linux stores critical files waste time during incidents searching for logs, configs, and process state. This project builds a mental map of the Filesystem Hierarchy Standard (FHS) by locating real artifacts on your lab system.
-- **Why it matters:** Rapid artifact location is the first step in any triage. Knowing that auth logs are in `/var/log/auth.log` (or in `journalctl` on systemd hosts) and that process state lives in `/proc` reduces incident response time significantly.
-
----
+- **Problem statement:** During incident response and forensic investigations, knowing exactly which filesystem paths to check — and in what order — is the difference between finding an attacker's artifact in minutes versus hours. The FHS defines where binaries, configs, logs, runtime data, and user homes live. Mastering these paths is prerequisite knowledge for every subsequent project.
+- **Why it matters:** NET 179 (Digital Forensics) exam scenarios and real investigations both test whether you can systematically locate persistence mechanisms, dropped files, modified configs, and log evidence across the standard Linux directory tree.
 
 ## 2) Difficulty
 
-**Beginner** — Low risk. This project is entirely read-only. No files are modified.
-
----
+- Beginner (estimated 3–5 focused hours)
 
 ## 3) Execution Context
 
-- **Primary path:** Host — Arch Linux bare metal
-- **Alternate path:** VM — any Linux VM where you have read access to `/proc`, `/var/log`, and `/etc`
-- All commands are non-destructive (`find`, `ls`, `stat`, `cat`, `sha256sum`).
-
----
+- **Host** — Arch Linux bare metal. Read-only investigation of the local filesystem. Evidence output directory is created under `./evidence/b2/`.
 
 ## 4) Prerequisites
 
-### Skills
-- Basic shell navigation
-- Understanding of file ownership and permissions
-- Ability to read `man` pages
-
-### Tools
-```bash
-# All tools should be present on any standard Arch/Linux system
-find --version
-stat --version
-sha256sum --version
-```
-
-### Lab Environment
-- `sudo` or read access to `/var/log`, `/proc`, and `/etc`
-- Arch Linux host or any systemd-based Linux VM
-
----
+- **Skills:** Basic terminal navigation, understanding of absolute vs relative paths, ability to read `man` pages.
+- **Tools:** `find`, `ls`, `stat`, `file`, `cat`, `grep`, `awk`, `sha256sum`, `journalctl`, `tee`
+- **Dependencies:** `sudo` access for protected paths; `procfs` mounted at `/proc` (standard on all Linux systems).
 
 ## 5) Rollback Plan
 
-> [!info] No rollback needed
-> This project is entirely read-only. No system files are created, modified, or deleted.
-> The only writes are to your local `evidence/b2/<TS>/` directory.
->
-> If you are running on a host with Snapper configured, you may optionally create a snapshot before starting as a general habit drill — but it is not required for this project.
-
----
+- **Host Snapper pre:** `sudo snapper -c root create --description "pre-b2-fhs-hunt"` — record snapshot number.
+- **Host Snapper post:** Not required — no changes are made to the host. Create a post snapshot as good practice: `sudo snapper -c root create --description "post-b2-fhs-hunt"`
+- **VM snapshot:** N/A
+- **Container rebuild command:** N/A
+- **Rollback trigger:** If any command accidentally modifies a file (e.g., accidental redirect with `>`), use `sudo snapper -c root undochange <PRE>..<POST>` to restore.
 
 ## 6) Project Plan
 
-- **Phase A:** Initialise evidence directory
-- **Phase B:** Map key FHS locations and collect artifact metadata
-- **Phase C:** Capture `/proc` process and socket state
-- **Phase D:** Identify log sources and capture recent entries
-- **Phase E:** Generate hash manifest
-
----
+- **Phase A — FHS Map:** Document the purpose and key artifact types for each major FHS directory. Record directory tree and ownership.
+- **Phase B — Artifact Locations Sweep:** Systematically visit each major FHS location and collect metadata about interesting files.
+- **Phase C — Log and Runtime Paths:** Inspect `/var/log/`, `/run/`, and `/proc/` for volatile artifacts and running-process data.
 
 ## 7) Walkthrough
 
-### Step 1 — Initialise evidence directory
+### Step 1 — Setup evidence directory and environment check
 
 ```bash
-TS="$(date -u +%Y%m%d_%H%M%SZ)"
-OUT="evidence/b2/${TS}"
-mkdir -p "$OUT"
-echo "Evidence path: $OUT"
-export OUT
+mkdir -p evidence/b2
+
+# Record hostname, kernel, and date for evidence context
+uname -a | tee evidence/b2/env_uname.txt
+hostname | tee evidence/b2/env_hostname.txt
+date -u | tee evidence/b2/env_datetime.txt
+id | tee evidence/b2/env_whoami.txt
+
+# Record mount table — know what filesystems are active
+findmnt --output TARGET,SOURCE,FSTYPE,OPTIONS | tee evidence/b2/env_mounts.txt
 ```
 
 Expected:
-- Directory created without errors
-- `$OUT` is set and non-empty
+- `env_uname.txt` shows Linux kernel version and architecture.
+- `env_mounts.txt` shows at least `/` (Btrfs), `/proc`, `/sys`, `/dev`, `/run`, and any additional mounts.
 
----
-
-### Step 2 — Map key FHS directories
-
-Capture the top-level layout and annotate what each directory is for:
+### Step 2 — Document the FHS top-level layout
 
 ```bash
-# Top-level FHS layout
-ls -la / | tee "$OUT/fhs_root_listing.txt"
+# Capture directory listing with types
+ls -lah --color=never / | tee evidence/b2/fhs_root_listing.txt
 
-# Key directories — existence and ownership
-stat /bin /sbin /usr /etc /var /tmp /home /root /proc /sys /run \
-  | tee "$OUT/fhs_key_dirs_stat.txt"
+# Show size of each top-level directory (non-recursive, quick)
+du -shx --exclude=/proc --exclude=/sys /* 2>/dev/null | sort -h | tee evidence/b2/fhs_root_sizes.txt
+
+# Show ownership and permissions of critical directories
+stat /bin /sbin /usr /etc /var /home /root /tmp /opt /srv /run | tee evidence/b2/fhs_critical_stat.txt
 ```
 
 Expected:
-- Standard FHS directories visible
-- Stat output shows owner, permissions, and inode numbers
+- Root listing shows standard FHS directories: `bin`, `boot`, `dev`, `etc`, `home`, `lib`, `opt`, `proc`, `root`, `run`, `srv`, `sys`, `tmp`, `usr`, `var`.
+- Symlinks (e.g., `/bin -> usr/bin` on modern Arch) are visible in `ls -lah` output.
 
----
-
-### Step 3 — Locate configuration artifacts in /etc
+### Step 3 — Investigate /etc (configuration artifacts)
 
 ```bash
-# Find all files modified in the last 7 days (recent config changes)
-sudo find /etc -type f -newer /etc/hostname \
-  -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null \
-  | sort | tee "$OUT/etc_recent_files.txt"
+# List files modified in the last 7 days inside /etc
+find /etc -maxdepth 2 -newer /etc/os-release -type f 2>/dev/null \
+  | tee evidence/b2/etc_recently_modified.txt
 
-# Capture sshd config (if present) — no secrets, just structure
-if [ -f /etc/ssh/sshd_config ]; then
-  sudo grep -v '^\s*#' /etc/ssh/sshd_config | grep -v '^\s*$' \
-    | tee "$OUT/sshd_config_effective.txt"
-fi
+# Record OS release info
+cat /etc/os-release | tee evidence/b2/etc_os_release.txt
 
-# Capture sudoers structure (group membership, not credentials)
-sudo cat /etc/sudoers 2>/dev/null | grep -v '^\s*#' | grep -v '^\s*$' \
-  | tee "$OUT/sudoers_effective.txt" || echo "No read access to /etc/sudoers" \
-  | tee "$OUT/sudoers_access.txt"
+# Record active shell configuration files
+ls -lah /etc/profile /etc/profile.d/ /etc/bash.bashrc 2>/dev/null | tee evidence/b2/etc_shell_configs.txt
+
+# List /etc/cron.d and crontab directories for scheduled tasks
+ls -lah /etc/cron.d /etc/cron.daily /etc/cron.weekly /etc/cron.hourly 2>/dev/null \
+  | tee evidence/b2/etc_cron_dirs.txt
+
+# Record sudoers configuration (redacted — do NOT capture sensitive values)
+sudo ls -lah /etc/sudoers /etc/sudoers.d/ 2>/dev/null | tee evidence/b2/etc_sudoers_listing.txt
+
+# Record SSH server config (sensitive values will be visible — keep evidence bundle local)
+sudo grep -Ev "^#|^$" /etc/ssh/sshd_config 2>/dev/null | tee evidence/b2/etc_sshd_config_active.txt
 ```
 
 Expected:
-- Recently modified `/etc` files listed
-- `sshd_config_effective.txt` shows active (non-comment) directives
-- `sudoers_effective.txt` captures group-level sudo grants
+- `etc_recently_modified.txt` may show recently changed config files — any unexpected entries are worth noting.
+- `etc_cron_dirs.txt` reveals any scheduled tasks in standard cron directories.
 
----
-
-### Step 4 — Explore /proc for live process artifacts
+### Step 4 — Investigate /var (variable data and logs)
 
 ```bash
-# Current process list with parent relationships
-ps auxf | tee "$OUT/proc_ps_auxf.txt"
+# List /var/log contents with sizes
+ls -lahR --color=never /var/log/ 2>/dev/null | tee evidence/b2/var_log_listing.txt
 
-# Open network sockets
-ss -tulpen | tee "$OUT/proc_sockets.txt"
+# Capture last 50 lines of key system logs
+sudo journalctl -b --no-pager -n 50 | tee evidence/b2/var_journal_recent.txt
 
-# Kernel version and uptime
-uname -a | tee "$OUT/kernel_version.txt"
-uptime | tee "$OUT/uptime.txt"
+# Capture auth log entries (if present as flat file)
+sudo cat /var/log/auth.log 2>/dev/null | tail -n 50 | tee evidence/b2/var_auth_log_tail.txt || echo "auth.log not present (using journald)" | tee evidence/b2/var_auth_log_tail.txt
 
-# Loaded kernel modules
-lsmod | tee "$OUT/lsmod.txt"
+# Check /var/spool/cron for user crontabs
+sudo ls -lahR /var/spool/cron/ 2>/dev/null | tee evidence/b2/var_spool_cron.txt
 
-# Mounted filesystems
-mount | tee "$OUT/mounts.txt"
-cat /proc/mounts | tee "$OUT/proc_mounts.txt"
+# Record /var/tmp for persistent temp files (survives reboots unlike /tmp)
+find /var/tmp -maxdepth 2 -type f 2>/dev/null | tee evidence/b2/var_tmp_files.txt
 ```
 
 Expected:
-- Process tree visible in `ps_auxf.txt`
-- Listening ports captured in `proc_sockets.txt`
-- All files saved to `$OUT`
+- `var_log_listing.txt` shows journal files plus any flat log files present.
+- `var_tmp_files.txt` may reveal temp files left by processes or installers.
 
----
-
-### Step 5 — Locate log artifacts in /var/log and journald
+### Step 5 — Investigate /proc (live process and kernel data)
 
 ```bash
-# List log files with sizes and modification times
-sudo find /var/log -type f -printf '%s\t%TY-%Tm-%Td %TH:%TM\t%p\n' 2>/dev/null \
-  | sort -rn | head -30 | tee "$OUT/varlog_file_list.txt"
+# List running process IDs
+ls /proc | grep -E '^[0-9]+$' | tee evidence/b2/proc_pids.txt | wc -l
 
-# Recent authentication events (systemd journal)
-sudo journalctl -u sshd --since "24 hours ago" --no-pager -o short-iso \
-  | tee "$OUT/journal_sshd_24h.txt"
+# For each running process, capture its executable path (non-root processes only)
+for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+  exe=$(readlink /proc/$pid/exe 2>/dev/null)
+  [ -n "$exe" ] && echo "$pid $exe"
+done | tee evidence/b2/proc_exe_paths.txt
 
-# Recent failed logins (if auth.log exists — Debian-style systems)
-if [ -f /var/log/auth.log ]; then
-  grep -i "failed\|invalid\|error" /var/log/auth.log | tail -50 \
-    | tee "$OUT/auth_log_failures.txt"
-fi
+# Capture kernel parameters
+cat /proc/version | tee evidence/b2/proc_kernel_version.txt
+cat /proc/cmdline | tee evidence/b2/proc_cmdline.txt
+cat /proc/meminfo | tee evidence/b2/proc_meminfo.txt
 
-# systemd journal errors from current boot
-sudo journalctl -p err..emerg -b --no-pager -o short-iso \
-  | tee "$OUT/journal_errors_boot.txt"
+# Show loaded kernel modules
+lsmod | tee evidence/b2/proc_lsmod.txt
 ```
 
 Expected:
-- Log file list shows sizes, helping prioritise which logs to review
-- SSH daemon events captured for the last 24 hours
-- Journal errors from current boot captured
+- `proc_exe_paths.txt` shows PID-to-executable mappings for all accessible processes.
+- `proc_lsmod.txt` lists all loaded kernel modules — note any unusual or unexpected entries.
 
----
-
-### Step 6 — Locate user home directories and check shell history paths
+### Step 6 — Investigate /tmp and /run (volatile runtime paths)
 
 ```bash
-# List home directories and their ownership
-ls -la /home/ | tee "$OUT/home_dir_listing.txt"
+# List /tmp contents (world-writable — common attacker drop zone)
+find /tmp -maxdepth 2 2>/dev/null | tee evidence/b2/tmp_listing.txt
+ls -lahR --color=never /tmp 2>/dev/null | tee evidence/b2/tmp_detailed.txt
 
-# Check current user's shell history location (not contents — just path and size)
-HISTFILE_PATH="${HISTFILE:-$HOME/.bash_history}"
-if [ -f "$HISTFILE_PATH" ]; then
-  stat "$HISTFILE_PATH" | tee "$OUT/shell_history_stat.txt"
-else
-  echo "No history file at $HISTFILE_PATH" | tee "$OUT/shell_history_stat.txt"
-fi
-
-# Check for other user accounts with login shells
-grep -v 'nologin\|false' /etc/passwd | tee "$OUT/users_with_shells.txt"
+# List /run contents (runtime state — cleared on reboot)
+ls -lah /run/ | tee evidence/b2/run_listing.txt
+find /run -maxdepth 2 -type s 2>/dev/null | tee evidence/b2/run_sockets.txt
 ```
 
 Expected:
-- Home directory listing shows owners and permissions
-- Shell history stat shows file size (useful for anomaly hunting, not reading content)
-- User list filtered to accounts with interactive shells
+- `/tmp` may contain socket files, lock files, or session data from running applications.
+- `/run/sockets.txt` lists UNIX domain sockets currently in use.
 
----
-
-### Step 7 — Capture /tmp and /run state
+### Step 7 — Investigate /home and user paths
 
 ```bash
-# /tmp — world-writable, often used for staging
-find /tmp -maxdepth 2 -printf '%M %u %g %s %TY-%Tm-%Td %p\n' 2>/dev/null \
-  | tee "$OUT/tmp_listing.txt"
+# List all home directories
+ls -lah /home/ | tee evidence/b2/home_listing.txt
 
-# /run — runtime state (sockets, PIDs, lock files)
-find /run -maxdepth 2 -type f -printf '%M %u %g %s %p\n' 2>/dev/null \
-  | head -50 | tee "$OUT/run_listing.txt"
+# For each home directory, list top-level contents (as root)
+for user_home in /home/*/; do
+  echo "=== $user_home ===" | tee -a evidence/b2/home_contents.txt
+  sudo ls -lah "$user_home" 2>/dev/null | tee -a evidence/b2/home_contents.txt
+done
+
+# Check for SSH authorized_keys in all home directories and root
+sudo find /home /root -name "authorized_keys" -type f 2>/dev/null | tee evidence/b2/ssh_authorized_keys_paths.txt
+
+# List .bash_history paths (do NOT cat — may contain sensitive commands)
+sudo find /home /root -name ".bash_history" -type f 2>/dev/null \
+  | tee evidence/b2/bash_history_paths.txt
 ```
 
 Expected:
-- `/tmp` listing shows any files staged there (typically empty on a clean system)
-- `/run` listing shows active runtime files
+- `ssh_authorized_keys_paths.txt` lists all `authorized_keys` files — verify that no unexpected public keys have been added.
+- `bash_history_paths.txt` documents which users have shell history files.
 
----
+### Step 8 — Investigate /usr/local (admin-installed artifacts)
+
+```bash
+# List custom binaries and scripts installed outside package manager
+find /usr/local/bin /usr/local/sbin /usr/local/lib /usr/local/share \
+  -maxdepth 2 -type f 2>/dev/null | tee evidence/b2/usr_local_files.txt
+
+# Check file types for anything unexpected
+find /usr/local/bin /usr/local/sbin -maxdepth 1 -type f 2>/dev/null \
+  -exec file {} \; | tee evidence/b2/usr_local_bin_filetypes.txt
+```
+
+Expected:
+- On a fresh Arch install, `/usr/local/bin` and `/usr/local/sbin` should be empty or contain only admin-placed tools.
+- Any ELF binaries present that were not deliberately installed are a potential indicator of compromise.
 
 ## 8) Validation
 
 ```bash
-# Verify all expected evidence files exist
-for f in \
-  fhs_root_listing.txt \
-  fhs_key_dirs_stat.txt \
-  etc_recent_files.txt \
-  proc_ps_auxf.txt \
-  proc_sockets.txt \
-  kernel_version.txt \
-  varlog_file_list.txt \
-  journal_sshd_24h.txt \
-  journal_errors_boot.txt \
-  home_dir_listing.txt \
-  users_with_shells.txt \
-  tmp_listing.txt; do
-  [ -f "$OUT/$f" ] && echo "PASS: $f" || echo "FAIL: $f missing"
+# Confirm all expected evidence files exist
+expected_files=(
+  "env_uname.txt" "env_mounts.txt" "fhs_root_listing.txt"
+  "etc_os_release.txt" "etc_recently_modified.txt"
+  "var_log_listing.txt" "proc_exe_paths.txt" "tmp_listing.txt"
+  "home_listing.txt" "ssh_authorized_keys_paths.txt"
+  "usr_local_files.txt"
+)
+
+for f in "${expected_files[@]}"; do
+  if [ -f "evidence/b2/$f" ]; then
+    echo "PRESENT: evidence/b2/$f"
+  else
+    echo "MISSING: evidence/b2/$f"
+  fi
 done
+
+# Count total files captured
+find evidence/b2 -type f | wc -l
 ```
-
-Expected:
-- All lines output `PASS`
-
----
 
 ## 9) Evidence
 
-### Files to capture
-- `evidence/b2/<TS>/fhs_root_listing.txt`
-- `evidence/b2/<TS>/fhs_key_dirs_stat.txt`
-- `evidence/b2/<TS>/etc_recent_files.txt`
-- `evidence/b2/<TS>/sshd_config_effective.txt` (if sshd present)
-- `evidence/b2/<TS>/sudoers_effective.txt` or `sudoers_access.txt`
-- `evidence/b2/<TS>/proc_ps_auxf.txt`
-- `evidence/b2/<TS>/proc_sockets.txt`
-- `evidence/b2/<TS>/kernel_version.txt`
-- `evidence/b2/<TS>/uptime.txt`
-- `evidence/b2/<TS>/lsmod.txt`
-- `evidence/b2/<TS>/mounts.txt`
-- `evidence/b2/<TS>/varlog_file_list.txt`
-- `evidence/b2/<TS>/journal_sshd_24h.txt`
-- `evidence/b2/<TS>/journal_errors_boot.txt`
-- `evidence/b2/<TS>/home_dir_listing.txt`
-- `evidence/b2/<TS>/shell_history_stat.txt`
-- `evidence/b2/<TS>/users_with_shells.txt`
-- `evidence/b2/<TS>/tmp_listing.txt`
-- `evidence/b2/<TS>/run_listing.txt`
+- **Output files:**
+  - `evidence/b2/env_*.txt` — host environment context
+  - `evidence/b2/fhs_root_listing.txt` — root directory layout
+  - `evidence/b2/fhs_root_sizes.txt` — directory size inventory
+  - `evidence/b2/fhs_critical_stat.txt` — key directory metadata
+  - `evidence/b2/etc_*.txt` — /etc artifact captures
+  - `evidence/b2/var_*.txt` — /var artifact captures
+  - `evidence/b2/proc_*.txt` — /proc kernel and process data
+  - `evidence/b2/tmp_*.txt` — /tmp volatile data
+  - `evidence/b2/run_*.txt` — /run socket and runtime state
+  - `evidence/b2/home_*.txt` — user home directory survey
+  - `evidence/b2/ssh_authorized_keys_paths.txt` — SSH key locations
+  - `evidence/b2/usr_local_*.txt` — admin-installed binary inventory
+- **Hash manifest:**
 
-> [!warning] Before committing to git
-> Review all evidence files for private IP addresses, hostnames, real usernames, or any sensitive data before committing. Replace with `<REDACTED>` or use a `.gitignore` rule to exclude the `evidence/` directory from the repository.
-
-### Generate hash manifest
 ```bash
-find "$OUT" -type f ! -name 'SHA256SUMS.txt' -print0 \
-  | xargs -0 sha256sum | tee "$OUT/SHA256SUMS.txt"
-
-# Verify the manifest
-sha256sum --check "$OUT/SHA256SUMS.txt" && echo "Manifest verified OK"
+find evidence/b2 -type f ! -name "SHA256SUMS.txt" -print0 \
+  | xargs -0 sha256sum | sort > evidence/b2/SHA256SUMS.txt
+cat evidence/b2/SHA256SUMS.txt
 ```
-
----
 
 ## 10) Failure Modes & Recovery
 
-| Symptom | Likely Cause | Fix |
-|---------|-------------|-----|
-| `find /etc` returns many "Permission denied" errors | Missing `sudo` | Re-run with `sudo find /etc ...` |
-| `journalctl` returns no output | Journal not persistent or service not logging | Check `journalctl --disk-usage`; verify `Storage=persistent` in `/etc/systemd/journald.conf` |
-| `/var/log/auth.log` not found | Arch uses systemd journal, not syslog | Use `journalctl` commands instead (already covered in Step 5) |
-| `ss` command not found | `iproute2` not installed | `sudo pacman -S iproute2` |
-| `stat` on `/proc` files returns unusual sizes | `/proc` is a virtual filesystem — sizes are always 0 | Expected behaviour; use `cat` to read content |
+- **Symptom:** `Permission denied` on protected paths like `/root/` or `/etc/shadow`.
+  - **Cause:** Running commands as a non-root user without `sudo`.
+  - **Fix:** Prefix commands with `sudo`. For bulk operations, run a dedicated sub-shell: `sudo bash -c 'find /root -type f'`
+  - **Rollback trigger:** N/A — read-only operation.
 
----
+- **Symptom:** `/proc/<PID>/exe` shows `(deleted)` for some processes.
+  - **Cause:** The process was started from a binary that has since been replaced or deleted (common after package upgrades without restart).
+  - **Fix:** Note the process in evidence. Use `ls -la /proc/<PID>/exe` and `cat /proc/<PID>/cmdline` to get more context. This is an expected condition — not necessarily malicious.
+  - **Rollback trigger:** N/A.
+
+- **Symptom:** `find /var/tmp` returns an unexpected number of files.
+  - **Cause:** Application wrote temp data that was not cleaned up.
+  - **Fix:** Identify which package owns the files using `pacman -Qo <path>`. Do not delete without understanding the purpose.
+  - **Rollback trigger:** N/A.
 
 ## 11) Sources
 
-- [SRC-FHS-3.0-01] — Filesystem Hierarchy Standard 3.0 — https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html
-- [SRC-MAN7-HIER-01] — hier(7) Linux man page — https://man7.org/linux/man-pages/man7/hier.7.html
-- [SRC-PROCFS-01] — proc(5) Linux man page — https://man7.org/linux/man-pages/man5/proc.5.html
-- [SRC-SYSTEMD-JOURNALCTL-01] — journalctl(1) man page — https://www.freedesktop.org/software/systemd/man/journalctl.html
-
----
+- [Linux Filesystem Hierarchy Standard 3.0](https://refspecs.linuxfoundation.org/FHS_3.0/fhs-3.0.html)
+- [man 7 hier — Linux filesystem hierarchy description](https://man7.org/linux/man-pages/man7/hier.7.html)
+- [man 5 proc — /proc filesystem documentation](https://man7.org/linux/man-pages/man5/proc.5.html)
+- [Arch Wiki — Security](https://wiki.archlinux.org/title/Security)
+- [SANS Digital Forensics — Linux IR cheat sheet](https://www.sans.org/posters/linux-shell-survival-guide/)
+- [NIST SP 800-86 — Integration of Forensic Techniques into Incident Response](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-86.pdf)
 
 ## 12) Stretch Goals
 
-- Extend the artifact hunt to `/sys` (sysfs): capture USB devices, block devices, and network interface state
-- Automate the hunt as a shell script that takes `$OUT` as an argument and runs all steps non-interactively
-- Compare your artifact list against the SANS Linux triage checklist or a CIS benchmark artifact inventory
-- Map each artifact location to a MITRE ATT&CK technique (e.g., `/tmp` staging → T1074.001)
-
----
-
-## Report Checklist
-
-Fill in before marking B2 complete:
-
-- [ ] Execution context declared: _____________________ (Host / VM)
-- [ ] Evidence directory created: `evidence/b2/<TS>/`
-- [ ] FHS root listing captured
-- [ ] `/etc` recent-files list captured
-- [ ] `/proc` process and socket state captured
-- [ ] Log sources identified and sampled (journal + `/var/log`)
-- [ ] User accounts with login shells identified
-- [ ] All validation checks output `PASS`
-- [ ] `SHA256SUMS.txt` generated and verified
-- [ ] Evidence files reviewed for sensitive data before any potential commit
-- [ ] UTC start time: _____________________ — UTC end time: _____________________
+- Write a single Bash script (`b2-fhs-sweep.sh`) that runs all investigation steps non-interactively and outputs to a timestamped evidence directory.
+- Use `auditd` or `inotifywait` to monitor `/etc/` for write events during a 60-second observation window and capture the output.
+- Extend the sweep to a Proxmox VM guest: SSH in, run the same sweep, and compare the FHS layout of a Debian/Ubuntu VM vs Arch bare metal.
+- Cross-reference findings with the [MITRE ATT&CK Linux persistence techniques](https://attack.mitre.org/tactics/TA0003/) and annotate which FHS locations are relevant to each technique.

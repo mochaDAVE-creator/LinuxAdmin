@@ -100,6 +100,49 @@ Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5
 
 ---
 
+## Capstone Projects — Lab Runbook Matrix
+
+> [!info]
+> The **Projects** track is a parallel evidence-first, rollback-aware lab curriculum mapped to the five curriculum phases above. Each project produces a hashed evidence bundle. See [[projects/PROJECT_INDEX|Project Index]] for the full matrix.
+
+### Beginner Track
+
+| ID | Project | Key Skills | Rollback |
+|---|---|---|---|
+| **B1** | [[projects/01-beginner/B1-Snapshot-Rollback-Drill\|Snapshot & Rollback Drill]] | Btrfs, Snapper, `snapper undochange` | Snapper |
+| **B2** | [[projects/01-beginner/B2-FHS-Artifact-Hunt\|FHS Artifact Hunt]] | FHS, `find`, `stat`, forensic locations | None (read-only) |
+| **B3** | [[projects/01-beginner/B3-SSH-Key-Only-Admin-Access\|SSH Key-Only Admin Access]] | `ssh-keygen`, `sshd_config`, `ssh-copy-id` | Snapper + config backup |
+| **B4** | [[projects/01-beginner/B4-Log-Triage-Starter\|Log Triage Starter]] | `journalctl`, `grep`, `awk`, `sed` | None (read-only) |
+
+### Intermediate Track
+
+| ID | Project | Key Skills | Rollback |
+|---|---|---|---|
+| **I1** | [[projects/02-intermediate/I1-Systemd-Service-Hardening\|Systemd Service Hardening]] | `systemd-analyze security`, drop-in units | Snapper |
+| **I2** | [[projects/02-intermediate/I2-Persistence-Detection-Sweep\|Persistence Detection Sweep]] | `find`, `pacman -Qo`, cron, MITRE TA0003 | None (read-only) |
+| **I3** | [[projects/02-intermediate/I3-ACL-Backed-Secret-Store\|ACL-Backed Secret Store]] | `setfacl`, `getfacl`, service users | Snapper |
+| **I4** | [[projects/02-intermediate/I4-Proxmox-Backup-Validation\|Proxmox Backup Validation]] | `vzdump`, `qmrestore`, backup→restore cycle | Proxmox VM snapshot |
+
+### Advanced Track
+
+| ID | Project | Key Skills | Rollback |
+|---|---|---|---|
+| **A1** | [[projects/03-advanced/A1-Centralized-Logging-Pipeline\|Centralized Logging Pipeline]] | `systemd-journal-remote`, `journal-upload` | Snapper |
+| **A2** | [[projects/03-advanced/A2-Network-Segmentation-Enforcement\|Network Segmentation Enforcement]] | Proxmox bridges, `nftables`, vmbr isolation | Proxmox VM snapshot |
+| **A3** | [[projects/03-advanced/A3-Threat-Informed-Detection-Pack\|Threat-Informed Detection Pack]] | `auditd`, MITRE ATT&CK, detection→simulate→verify | Snapper |
+| **A4** | [[projects/03-advanced/A4-Container-Isolation-Benchmark\|Container Isolation Benchmark]] | rootless Podman, Distrobox, seccomp, capabilities | Snapper |
+
+### Expert Track
+
+| ID | Project | Key Skills | Rollback |
+|---|---|---|---|
+| **E1** | [[projects/04-expert/E1-IR-Playbook-Automation\|IR Playbook Automation]] | `ir-triage.sh`, ATT&CK mapping, SHA-256 manifest | None (read-only) |
+| **E2** | [[projects/04-expert/E2-Zero-Trust-Homelab-Blueprint\|Zero-Trust Homelab Blueprint]] | SSHCA, short-lived certs, per-segment nftables | Snapper + VM snapshot |
+| **E3** | [[projects/04-expert/E3-Secure-Platform-Baseline\|Secure Platform Baseline]] | `lynis`, sysctl hardening, CIS Benchmark | Snapper |
+| **E4** | [[projects/04-expert/E4-Purple-Team-Validation-Cycle\|Purple-Team Validation Cycle]] | Adversary emulation, detection validation, ATT&CK | VM snapshot (mandatory) |
+
+---
+
 ## Quick-Reference Index
 
 ### By Tool

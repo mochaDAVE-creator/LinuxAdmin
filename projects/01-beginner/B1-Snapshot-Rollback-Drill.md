@@ -2,300 +2,284 @@
 title: B1 - Snapshot & Rollback Drill
 aliases:
   - b1-snapshot-rollback
+  - btrfs-snapper-drill
 tags:
   - beginner
   - btrfs
   - snapper
   - rollback
-  - proxmox
   - evidence
+  - net412
 date: 2026-05-10
 ---
 
 # B1 — Snapshot & Rollback Drill
 
+> [!warning] Operating Assumptions & Threat Model
+> **Context:** Arch Linux bare-metal host with Btrfs filesystem and Snapper ≥ 0.10 installed and configured on the `root` config.
+> **Risk level:** Low — all changes are made to `/etc/motd` (non-critical file). No services are restarted. No network changes occur.
+> **Threat model:** Operator error during system configuration. Goal is to prove the rollback loop works *before* it is needed under pressure.
+> **Out of scope:** Kernel updates, bootloader changes, subvolume restructuring. Those require advanced rollback procedures not covered here.
+> **Prerequisite check:** Run `sudo snapper -c root list` — if it errors, configure Snapper first per the [Arch Wiki Snapper article](https://wiki.archlinux.org/title/Snapper) before proceeding.
+
 ## 1) Mission
 
-- **Problem statement:** Operators who make system changes without a rollback path risk unrecoverable downtime. This project drills the pre-change safety habit until it is automatic.
-- **Why it matters:** Every subsequent project in this ladder depends on you being able to undo changes safely. Rollback discipline is the single most important operational skill for a Linux administrator.
-
----
+- **Problem statement:** Operators who have never tested their rollback path discover it is broken exactly when they need it most — after a bad upgrade or misconfiguration. This project forces a dry run of the complete snapshot → change → validate → rollback loop using a harmless target file.
+- **Why it matters:** Btrfs + Snapper is the core safety net for all other projects in this runbook. If you cannot execute a reliable rollback here, every subsequent high-risk project is dangerous. This drill also teaches the evidence-capture habit that all other projects depend on.
 
 ## 2) Difficulty
 
-**Beginner** — Low risk. All changes are reversible by design.
-
----
+- Beginner (estimated 2–3 focused hours)
 
 ## 3) Execution Context
 
-- **Primary path:** Host — Arch Linux bare metal with Btrfs + Snapper
-- **Alternate path:** VM — Proxmox virtual machine snapshot (no Snapper required)
-- Run on your **lab environment only**. Never run snapshot/rollback drills on shared or production systems without explicit change-management approval.
-
----
+- **Host** — Arch Linux bare metal only. Do not attempt on a VM guest running Btrfs unless the VM itself has Snapper configured.
 
 ## 4) Prerequisites
 
-### Skills
-- Basic shell navigation and file editing
-- Familiarity with `sudo`
-
-### Tools
-```bash
-# Confirm Snapper is installed and a 'root' config exists (Host path)
-snapper --version
-snapper -c root list | head -5
-
-# Confirm Proxmox qm tool is available (VM path — run on Proxmox node)
-qm list
-```
-
-### Lab Environment
-- **Host path:** Arch Linux with Btrfs root subvolume and Snapper `root` config
-- **VM path:** Proxmox node with at least one VM you own and can safely snapshot
-- `sudo` privileges on the target system
-
----
+- **Skills:** Basic terminal navigation (`cd`, `ls`, `cat`, `grep`), understanding of what a filesystem snapshot is conceptually.
+- **Tools:** `snapper`, `btrfs-progs`, `sudo` access, `sha256sum`, `tee`
+- **Dependencies:**
+  - Btrfs filesystem mounted at `/` (verify with `findmnt -t btrfs /`)
+  - Snapper `root` config created (`sudo snapper -c root list` succeeds)
+  - `snapper` package installed (`pacman -Q snapper`)
 
 ## 5) Rollback Plan
 
-> [!warning] Safety first
-> Create your rollback point **before** making any change. If you skip this step and something goes wrong, you have no recovery path.
-
-### Host path (Snapper)
-```bash
-# Record the pre-change snapshot number after creation
-sudo snapper -c root create --description "pre-b1-drill"
-snapper -c root list | tail -n 5
-# Note the snapshot NUMBER from the output — you will need it for rollback
-```
-
-### VM path (Proxmox)
-```bash
-# Run on the Proxmox node; replace <VMID> with your VM's numeric ID
-VMID=<VMID>
-qm snapshot "$VMID" pre-b1-drill --description "B1 pre-change snapshot"
-qm listsnapshot "$VMID"
-```
-
-### Rollback trigger conditions
-- Any unexpected file corruption
-- Loss of shell access
-- The `/etc/motd` change persists after the intended revert step
-
----
+- **Host Snapper pre:** `sudo snapper -c root create --description "pre-b1-drill"` — capture snapshot number from output.
+- **Host Snapper post:** `sudo snapper -c root create --description "post-b1-drill"`
+- **VM snapshot:** N/A (this project runs on host, not in a VM)
+- **Container rebuild command:** N/A
+- **Manual rollback trigger:** If any step produces unexpected output, run:
+  ```bash
+  sudo snapper -c root undochange <PRE_NUM>..<POST_NUM>
+  ```
+  Replace `<PRE_NUM>` and `<POST_NUM>` with the snapshot numbers recorded during execution.
 
 ## 6) Project Plan
 
-- **Phase A:** Set up evidence directory and create pre-change snapshot
-- **Phase B:** Make a controlled, reversible change and capture evidence
-- **Phase C:** Validate the change, then revert and validate restoration
-- **Phase D:** Generate hash manifest and complete the report checklist
-
----
+- **Phase A — Environment Verification:** Confirm Btrfs mount layout, Snapper config, and disk space headroom before touching anything.
+- **Phase B — Snapshot + Controlled Change:** Create pre-snapshot, make reversible edit to `/etc/motd`, capture state.
+- **Phase C — Rollback + Validation:** Use Snapper to undo the change, confirm file is restored byte-for-byte, hash the evidence bundle.
 
 ## 7) Walkthrough
 
-### Step 1 — Initialise evidence directory
+### Step 1 — Verify Btrfs and Snapper environment
 
 ```bash
-TS="$(date -u +%Y%m%d_%H%M%SZ)"
-OUT="evidence/b1/${TS}"
-mkdir -p "$OUT"
-echo "Evidence path: $OUT"
-# Export OUT so subsequent steps can reference it in the same shell session
-export OUT
+# Confirm Btrfs is the root filesystem
+findmnt -t btrfs / | tee evidence/b1/env_btrfs_mount.txt
+
+# Show subvolume layout
+sudo btrfs subvolume list / | tee evidence/b1/env_subvol_list.txt
+
+# Show existing Snapper snapshots (baseline)
+sudo snapper -c root list | tee evidence/b1/env_snapshots_baseline.txt
+
+# Show current disk usage (ensure >10 % free for snapshot COW overhead)
+df -h / | tee evidence/b1/env_disk_usage.txt
+
+# Record Snapper config details
+sudo snapper -c root get-config | tee evidence/b1/env_snapper_config.txt
 ```
 
 Expected:
-- Directory created without errors
-- `$OUT` is set and non-empty
+- `findmnt` output shows `TYPE=btrfs` and `SOURCE` pointing to your disk device.
+- `btrfs subvolume list` shows at least a `@` or `@root` subvolume and a `.snapshots` subvolume.
+- `snapper list` shows existing snapshots (or empty if this is a fresh config — that is fine).
+- Disk usage shows filesystem is not near capacity.
 
----
+### Step 2 — Capture pre-change baseline of target file
 
-### Step 2 — Create pre-change snapshot and record it
-
-#### Host path (Snapper)
 ```bash
-sudo snapper -c root create --description "pre-b1-drill"
-snapper -c root list | tee "$OUT/snapshots_before.txt"
-# Capture the new snapshot number
-PRE_SNAP=$(snapper -c root list | awk '/pre-b1-drill/ {print $1}' | tail -n1)
-echo "Pre-change snapshot: $PRE_SNAP" | tee "$OUT/pre_snap_id.txt"
+mkdir -p evidence/b1
+
+# Record the exact current state of /etc/motd
+cat /etc/motd | tee evidence/b1/motd_before.txt
+
+# Record file metadata (permissions, ownership, size, modification time)
+stat /etc/motd | tee evidence/b1/motd_stat_before.txt
+
+# Hash the file before any change
+sha256sum /etc/motd | tee evidence/b1/motd_hash_before.txt
 ```
 
 Expected:
-- New snapshot appears in the list
-- `snapshots_before.txt` and `pre_snap_id.txt` saved to `$OUT`
+- `motd_before.txt` contains the current contents of `/etc/motd` (may be empty — that is valid).
+- `stat` output shows `Uid`, `Gid`, and `Access` mode — record these for comparison post-rollback.
 
-#### VM path (Proxmox)
+### Step 3 — Create pre-change Snapper snapshot
+
 ```bash
-VMID=<VMID>
-qm snapshot "$VMID" pre-b1-drill --description "B1 pre-change snapshot"
-qm listsnapshot "$VMID" | tee "$OUT/vm_snapshots_before.txt"
+# Create the pre-change snapshot and capture its number
+sudo snapper -c root create --description "pre-b1-drill" --print-number | tee evidence/b1/snapshot_pre_num.txt
+
+PRE_NUM=$(cat evidence/b1/snapshot_pre_num.txt)
+echo "Pre-change snapshot number: $PRE_NUM"
+
+# Confirm snapshot was created
+sudo snapper -c root list | tee evidence/b1/snapshots_after_pre.txt
+
+# Show snapshot metadata
+sudo snapper -c root info "$PRE_NUM" | tee evidence/b1/snapshot_pre_info.txt
 ```
 
 Expected:
-- Snapshot `pre-b1-drill` appears in the list
-- `vm_snapshots_before.txt` saved to `$OUT`
+- `snapshot_pre_num.txt` contains a single integer (e.g., `5`).
+- `snapper list` now shows the new snapshot with description `pre-b1-drill`.
 
----
-
-### Step 3 — Make a controlled, reversible change
+### Step 4 — Make controlled, reversible change
 
 ```bash
-# Append a clearly-labelled test line to /etc/motd
-echo "# b1-drill-test $(date -u +%Y-%m-%dT%H:%M:%SZ)" | sudo tee -a /etc/motd
-# Capture the modified file as evidence
-cat /etc/motd | tee "$OUT/motd_modified.txt"
+# Append a clearly marked test line to /etc/motd
+echo "# B1-DRILL-TEST: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | sudo tee -a /etc/motd
+
+# Capture modified state
+cat /etc/motd | tee evidence/b1/motd_after_change.txt
+sha256sum /etc/motd | tee evidence/b1/motd_hash_after_change.txt
+
+# Confirm the line is present
+grep "B1-DRILL-TEST" /etc/motd | tee evidence/b1/motd_grep_change.txt
 ```
 
 Expected:
-- The test line appears at the end of `/etc/motd`
-- `motd_modified.txt` saved to `$OUT`
+- `/etc/motd` now ends with the `B1-DRILL-TEST` marker line.
+- `sha256sum` output is different from `motd_hash_before.txt`.
+- `grep` output shows exactly one matching line.
 
----
-
-### Step 4 — Validate the change
+### Step 5 — Create post-change snapshot
 
 ```bash
-grep "b1-drill-test" /etc/motd | tee "$OUT/motd_grep_result.txt"
+sudo snapper -c root create --description "post-b1-drill" --print-number | tee evidence/b1/snapshot_post_num.txt
+
+POST_NUM=$(cat evidence/b1/snapshot_post_num.txt)
+echo "Post-change snapshot number: $POST_NUM"
+
+sudo snapper -c root list | tee evidence/b1/snapshots_after_post.txt
 ```
 
 Expected:
-- The grep returns the test line with exit code `0`
-- `motd_grep_result.txt` saved to `$OUT`
+- `snapshot_post_num.txt` contains an integer greater than `PRE_NUM`.
 
----
+### Step 6 — Execute rollback via snapper undochange
 
-### Step 5 — Revert the change
-
-#### Option A — Manual revert (both paths)
 ```bash
-# Remove only the line added by the drill; preserve any pre-existing content
-sudo sed -i '/b1-drill-test/d' /etc/motd
-cat /etc/motd | tee "$OUT/motd_after_revert.txt"
+PRE_NUM=$(cat evidence/b1/snapshot_pre_num.txt)
+POST_NUM=$(cat evidence/b1/snapshot_post_num.txt)
+
+# Show what will be changed before committing
+sudo snapper -c root undochange --dry-run "$PRE_NUM".."$POST_NUM" | tee evidence/b1/rollback_dry_run.txt
+
+# Execute the actual rollback
+sudo snapper -c root undochange "$PRE_NUM".."$POST_NUM" | tee evidence/b1/rollback_output.txt
 ```
 
-#### Option B — Snapper rollback (Host path only, when Option A is not sufficient)
+Expected:
+- Dry run shows `/etc/motd` as the file that will be modified.
+- Actual rollback completes without errors.
+
+### Step 7 — Validate restoration
+
 ```bash
-# This restores the subvolume to the pre-change state — use with care
-sudo snapper -c root undochange "${PRE_SNAP}..0" /etc/motd
-cat /etc/motd | tee "$OUT/motd_after_snapper_revert.txt"
+# Check /etc/motd is restored
+cat /etc/motd | tee evidence/b1/motd_after_rollback.txt
+sha256sum /etc/motd | tee evidence/b1/motd_hash_after_rollback.txt
+
+# Confirm B1 test line is gone
+grep "B1-DRILL-TEST" /etc/motd && echo "FAIL: line still present" || echo "PASS: line removed"
+
+# Compare hashes: before == after rollback
+echo "Hash before change:"
+cat evidence/b1/motd_hash_before.txt
+echo "Hash after rollback:"
+cat evidence/b1/motd_hash_after_rollback.txt
 ```
 
-> [!warning]
-> `snapper undochange` operates on the live filesystem. For a full subvolume rollback, use `snapper rollback` and reboot — only do this if the manual revert fails and you cannot recover the file otherwise.
-
----
-
-### Step 6 — Create post-change snapshot
-
-#### Host path
-```bash
-sudo snapper -c root create --description "post-b1-drill"
-snapper -c root list | tee "$OUT/snapshots_after.txt"
-POST_SNAP=$(snapper -c root list | awk '/post-b1-drill/ {print $1}' | tail -n1)
-echo "Post-change snapshot: $POST_SNAP" | tee "$OUT/post_snap_id.txt"
-```
-
-#### VM path
-```bash
-qm snapshot "$VMID" post-b1-drill --description "B1 post-change snapshot"
-qm listsnapshot "$VMID" | tee "$OUT/vm_snapshots_after.txt"
-```
-
----
+Expected:
+- `grep` returns exit code 1 (no match) — you should see `PASS: line removed`.
+- Both hash files show identical SHA-256 values, proving byte-for-byte restoration.
 
 ## 8) Validation
 
-Run these commands to confirm the drill completed successfully:
-
 ```bash
-# 1. Confirm the test line is gone from /etc/motd
-grep -c "b1-drill-test" /etc/motd && echo "FAIL: test line still present" \
-  || echo "PASS: test line removed"
+# Objective proof: pre-change and post-rollback hashes must match
+PRE_HASH=$(awk '{print $1}' evidence/b1/motd_hash_before.txt)
+POST_HASH=$(awk '{print $1}' evidence/b1/motd_hash_after_rollback.txt)
 
-# 2. Confirm snapshot(s) exist — Host path
-snapper -c root list | grep -E "pre-b1-drill|post-b1-drill"
+if [ "$PRE_HASH" = "$POST_HASH" ]; then
+  echo "VALIDATION PASSED: rollback restored /etc/motd byte-for-byte"
+else
+  echo "VALIDATION FAILED: hashes differ — investigate evidence/b1/"
+fi
 
-# 3. Confirm evidence files exist
-ls -lh "$OUT/"
-
-# 4. Confirm SHA256SUMS.txt will cover all evidence files
-find "$OUT" -type f ! -name 'SHA256SUMS.txt'
+# Confirm Snapper still lists both snapshots
+sudo snapper -c root list | grep -E "pre-b1-drill|post-b1-drill"
 ```
-
-Expected:
-- grep exits non-zero (no match) — revert succeeded
-- Both snapshots visible in Snapper list
-- All evidence files present
-
----
 
 ## 9) Evidence
 
-### Files to capture
-- `evidence/b1/<TS>/snapshots_before.txt`
-- `evidence/b1/<TS>/pre_snap_id.txt`
-- `evidence/b1/<TS>/motd_modified.txt`
-- `evidence/b1/<TS>/motd_grep_result.txt`
-- `evidence/b1/<TS>/motd_after_revert.txt`
-- `evidence/b1/<TS>/snapshots_after.txt`
-- `evidence/b1/<TS>/post_snap_id.txt`
+- **Output files:**
+  - `evidence/b1/env_btrfs_mount.txt` — filesystem type confirmation
+  - `evidence/b1/env_subvol_list.txt` — Btrfs subvolume layout
+  - `evidence/b1/env_snapshots_baseline.txt` — pre-drill snapshot inventory
+  - `evidence/b1/env_disk_usage.txt` — disk space check
+  - `evidence/b1/env_snapper_config.txt` — Snapper config dump
+  - `evidence/b1/motd_before.txt` — file contents before change
+  - `evidence/b1/motd_stat_before.txt` — file metadata before change
+  - `evidence/b1/motd_hash_before.txt` — SHA-256 before change
+  - `evidence/b1/snapshot_pre_num.txt` — pre-change snapshot number
+  - `evidence/b1/snapshot_pre_info.txt` — pre snapshot metadata
+  - `evidence/b1/snapshots_after_pre.txt` — snapshot list after pre
+  - `evidence/b1/motd_after_change.txt` — file after modification
+  - `evidence/b1/motd_hash_after_change.txt` — SHA-256 after change
+  - `evidence/b1/motd_grep_change.txt` — grep proof of modification
+  - `evidence/b1/snapshot_post_num.txt` — post-change snapshot number
+  - `evidence/b1/snapshots_after_post.txt` — snapshot list after post
+  - `evidence/b1/rollback_dry_run.txt` — dry-run rollback output
+  - `evidence/b1/rollback_output.txt` — actual rollback output
+  - `evidence/b1/motd_after_rollback.txt` — file contents post-rollback
+  - `evidence/b1/motd_hash_after_rollback.txt` — SHA-256 post-rollback
+- **Hash manifest:**
 
-### Generate hash manifest
 ```bash
-find "$OUT" -type f ! -name 'SHA256SUMS.txt' -print0 \
-  | xargs -0 sha256sum | tee "$OUT/SHA256SUMS.txt"
-
-# Verify the manifest
-sha256sum --check "$OUT/SHA256SUMS.txt" && echo "Manifest verified OK"
+find evidence/b1 -type f ! -name "SHA256SUMS.txt" -print0 \
+  | xargs -0 sha256sum | sort > evidence/b1/SHA256SUMS.txt
+cat evidence/b1/SHA256SUMS.txt
 ```
-
----
 
 ## 10) Failure Modes & Recovery
 
-| Symptom | Likely Cause | Fix | Rollback Trigger |
-|---------|-------------|-----|-----------------|
-| `snapper -c root list` shows no configs | Snapper not configured for Btrfs root | Follow [SRC-ARCH-SNAPPER-01] setup guide | — |
-| `sudo tee -a /etc/motd` fails with permission denied | Insufficient sudo rights | Verify sudo config; check `/etc/sudoers` | — |
-| `motd` line not removed by `sed` | Pattern mismatch or file encoding issue | Run `grep "b1-drill" /etc/motd` to inspect, then use manual editor | Use Snapper `undochange` if motd is corrupted |
-| `qm snapshot` fails | VM is running an operation or VMID is wrong | Wait for running tasks to complete; verify `qm list` | — |
-| Snapper rollback changes boot target | Full `snapper rollback` modifies default subvolume | Reboot required; follow recovery in [SRC-ARCH-SNAPPER-01] | — |
+- **Symptom:** `snapper -c root list` fails with "No config 'root' found."
+  - **Cause:** Snapper root config has not been created.
+  - **Fix:** `sudo snapper -c root create-config /` then re-verify with `snapper -c root list`.
+  - **Rollback trigger:** N/A — no changes made yet.
 
----
+- **Symptom:** `btrfs subvolume list /` shows no `.snapshots` subvolume.
+  - **Cause:** Btrfs subvolume layout does not have a dedicated snapshots subvolume or it is not mounted.
+  - **Fix:** Consult the [Arch Wiki Snapper article](https://wiki.archlinux.org/title/Snapper#Configuration_of_snapper_and_mount_point) for proper `.snapshots` mount setup.
+  - **Rollback trigger:** N/A — no changes made yet.
+
+- **Symptom:** `undochange` fails with "snapshot not found" or path errors.
+  - **Cause:** Snapshot numbers were not captured correctly, or snapshots were deleted.
+  - **Fix:** Run `sudo snapper -c root list` to find valid snapshot numbers. If both snapshots exist, re-run the undochange command with correct numbers.
+  - **Rollback trigger:** Manual file restoration: `sudo cp evidence/b1/motd_before.txt /etc/motd`
+
+- **Symptom:** Hashes differ after rollback.
+  - **Cause:** Another process modified `/etc/motd` between steps, or rollback was incomplete.
+  - **Fix:** Inspect `evidence/b1/motd_after_rollback.txt` vs `motd_before.txt` using `diff`. Manually restore from backup copy.
+  - **Rollback trigger:** `sudo cp evidence/b1/motd_before.txt /etc/motd`
 
 ## 11) Sources
 
-- [SRC-ARCH-SNAPPER-01] — Arch Wiki: Snapper — https://wiki.archlinux.org/title/Snapper
-- [SRC-ARCH-BTRFS-01] — Arch Wiki: Btrfs — https://wiki.archlinux.org/title/Btrfs
-- [SRC-PVE-ADMIN-01] — Proxmox VE Administration Guide — https://pve.proxmox.com/pve-docs/pve-admin-guide.html
-
----
+- [Arch Wiki — Snapper](https://wiki.archlinux.org/title/Snapper)
+- [Arch Wiki — Btrfs](https://wiki.archlinux.org/title/Btrfs)
+- [Snapper project homepage](http://snapper.io/)
+- [btrfs-progs documentation](https://btrfs.readthedocs.io/en/latest/)
+- [NIST SP 800-61r2 — Computer Security Incident Handling Guide](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-61r2.pdf)
 
 ## 12) Stretch Goals
 
-- Script the entire drill (snapshot → change → validate → revert → verify → hash) as `scripts/b1_drill.sh`
-- Extend the drill to test rollback of a package install (`pacman -S <pkg>` → rollback via Snapper)
-- Add a Proxmox PBS (Proxmox Backup Server) restore test as an alternate recovery path
-- Map this drill to NIST SP 800-128 configuration management controls
-
----
-
-## Report Checklist
-
-Fill in before marking B1 complete:
-
-- [ ] Execution context declared: _____________________ (Host / VM)
-- [ ] Pre-change snapshot created — ID/Name: _____________________
-- [ ] Controlled change made and evidence captured
-- [ ] Change validated with grep — result: PASS / FAIL
-- [ ] Change reverted — revert method used: _____________________
-- [ ] Revert validated — result: PASS / FAIL
-- [ ] Post-change snapshot created — ID/Name: _____________________
-- [ ] Evidence directory: `evidence/b1/<TS>/`
-- [ ] `SHA256SUMS.txt` generated and verified
-- [ ] UTC start time: _____________________ — UTC end time: _____________________
+- Configure Snapper timeline cleanup (`TIMELINE_CLEANUP=yes`) and verify that old snapshots are automatically pruned.
+- Attempt a more impactful but still reversible change: install a test package, snapshot before/after, rollback via `undochange`, confirm package files are removed.
+- Write a 10-line shell script (`b1-drill.sh`) that automates all steps and saves outputs to a timestamped evidence directory.
+- Read the [Btrfs send/receive documentation](https://btrfs.readthedocs.io/en/latest/Send-receive.html) and export one snapshot as a backup stream: `sudo btrfs send /.snapshots/<NUM>/snapshot | gzip > /tmp/b1-snapshot.btrfs.gz`
